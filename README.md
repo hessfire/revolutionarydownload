@@ -1,15 +1,15 @@
-# ![logo2](https://github.com/hessfire/revolutionarydownload/assets/134144364/62a4f0e6-acc1-45ee-a763-bc78f9d583d8) revolutionarydownload
+# ![](logo2.png) revolutionarydownload
 >simple telegram inline bot to download songs using a spotify link
 
 ***
-##requirements
+## requirements
 * `aiogram` | `pip install aiogram`
 * `savify` | `pip install --use-pep517 git+https://github.com/stschake/savify@feature/use-yt-dlp`
 
 ***
-##prerequisites
+## prerequisites
 1. obtain your spotify api credentials at https://developer.spotify.com/documentation/web-api/concepts/apps
-2. create a telegram bot using [@BotFather](t.me/BotFather) and get it's token
+2. create a telegram bot using [@BotFather](t.me/BotFather) and get its token
 3. create a new channel in telegram and add your bot as administrator into it
 4. obtain id of your new channel (forward any message from your channel to  [@getmyid_bot](t.me/getmyid_bot) or enable "Show Peer IDs in Profile" in telegram desktop experimental settings and open channel info)
 5. configure the script!
