@@ -9,9 +9,9 @@
 ***
 ## prerequisites
 1. obtain your spotify api credentials at https://developer.spotify.com/documentation/web-api/concepts/apps
-2. create a telegram bot using [@BotFather](t.me/BotFather) and get its token
+2. create a telegram bot using [@BotFather](https://t.me/BotFather) and get it's token
 3. create a new channel in telegram and add your bot as administrator into it
-4. obtain id of your new channel (forward any message from your channel to  [@getmyid_bot](t.me/getmyid_bot) or enable "Show Peer IDs in Profile" in telegram desktop experimental settings and open channel info)
+4. obtain id of your new channel (forward any message from your channel to  [@getmyid_bot](https://t.me/getmyid_bot) or enable "Show Peer IDs in Profile" in telegram desktop experimental settings and open channel info)
 5. configure the script!
 
 ```py
