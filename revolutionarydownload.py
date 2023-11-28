@@ -85,7 +85,7 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
     if file_id.startswith("failed"):
         await bot.edit_message_text(
             inline_message_id=chosen_inline_result.inline_message_id, 
-            text=file_id)
+            text=file_id.replace(TELEGRAM_API_TOKEM, ''))
         return
 
     await bot.edit_message_media(
