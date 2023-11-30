@@ -4,7 +4,8 @@
 ***
 ## requirements
 * `aiogram` | `pip install aiogram`
-* `savify` | `pip install --use-pep517 git+https://github.com/stschake/savify@feature/use-yt-dlp`
+* `spotipy` | `pip install spotipy`
+* `yt-dlp` | `pip install yt-dlp`
 
 ***
 ## prerequisites
