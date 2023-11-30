@@ -1,12 +1,10 @@
 from aiogram.types.inline_query_result import InlineQueryResult
 from aiogram.types.input_file import InputFile
 from aiogram.types.input_media_audio import InputMediaAudio
-from savify import Savify
-from savify.types import Type, Format, Quality
-from savify.utils import PathHolder
+from spotipy import SpotifyClientCredentials, Spotify
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery, InlineQueryResultAudio, InlineQueryResultCachedAudio, InlineQueryResultCachedPhoto, InlineQueryResultPhoto, InputTextMessageContent, InlineQueryResultArticle, URLInputFile, inline_query_result_audio
-from savify.logger import Logger
+from yt_dlp import *
 import asyncio
 import logging
 import os
@@ -20,12 +18,85 @@ SPOTIPY_CLIENT_SECRET = 'a25a8aac15f0a98a9555ef61dc833385'
 CHANNEL_ID = -100123456789 #since telegram requires file_id in order to edit audio in message sent by inline query, you need other chat(channel) where bot can upload files and take their file_id
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("spotipylog")
-logger.addHandler(logging.StreamHandler(sys.stdout))
+
+class spotipy_wrap:
+    def __init__(self, client_id, client_secret, download_dir="downloads"):
+          self.spotify = Spotify(auth_manager=SpotifyClientCredentials(client_id=client_id,client_secret=client_secret))
+          self.download_dir = download_dir
+          
+    def __search_youtube(self, search_query:str, max_results=5):
+        options = {
+            'format': 'best',
+            'extract_flat': True
+        }
+
+        with YoutubeDL(options) as ydl:
+            search_results = ydl.extract_info(f'ytsearch{max_results}:{search_query}', download=False)
+        
+            videos = []
+            for entry in search_results['entries']:
+                video_info = {
+                    'title': entry['title'],
+                    'url': entry['url'],
+                    'duration': entry['duration'],
+                }
+                videos.append(video_info)
+
+            return videos      
+    def __download_youtube_video(self, url:str, format:str, output_path="%(title)s.%(ext)s"):
+        options = {
+            'format': 'bestaudio/best',
+            'extractaudio': True,
+            'audioformat': format,
+            'outtmpl': output_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': format,
+                'preferredquality': '360',
+            }],
+        }
+
+        with YoutubeDL(options) as ydl:
+            ydl.download([url])
+    def __duration_near(self, dur1, dur2, tolerance=0.1):
+        diff = abs(dur1 - dur2)
+        return diff <= tolerance
+
+    def download(self, spotify_url:str, format_str:str) -> bool:
+        track = self.spotify.track(spotify_url)
+
+        performer_str=track['artists'][0]['name']
+        if len(track['artists']) > 0: #generate string in format "artist1, artist2, artist3" if there is more than 1 artist present
+            for x in track['artists']:
+                if x['name'] not in performer_str: performer_str += f", {x['name']}"
+        
+        name = track['name']
+        
+        query = f"{performer_str} - {name}"
+        
+        if os.path.exists(os.path.join(self.download_dir, f"{performer_str} - {name}.{format_str}")):
+            return True
+        
+        results = self.__search_youtube(search_query=query)
+
+        for idx, video in enumerate(results, start=1):
+            if video['title'] == name:
+                print(f"{idx}. title: {video['title']}")
+                print(f"url: {video['url']}")
+                print(f"duration: {video['duration']} seconds")
+                self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, f"{performer_str} - {name}"))
+                return True
+            elif name.lower() in video['title'].lower() and self.__duration_near(float(video['duration']), (float(track['duration_ms']) / 1000), tolerance=1.5):
+                print(f"{idx}. title: {video['title']}")
+                print(f"url: {video['url']}")
+                print(f"duration: {video['duration']} seconds")
+                self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, f"{performer_str} - {name}"))
+                return True
+            else: return False
 
 bot = Bot(token=TELEGRAM_API_TOKEN)
 dp = Dispatcher()
-s = Savify(api_credentials=(SPOTIPY_CLIENT_ID,SPOTIPY_CLIENT_SECRET), logger=logger, quality=Quality.BEST, download_format=Format.MP3, path_holder=PathHolder(downloads_path="downloads"))
+s = spotipy_wrap(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET, download_dir="downloads")
 
 async def upload_file_and_get_file_id(file_path:str,thumb_url:str,track_title:str,performer_str:str,duration:int) -> str:
     try:
@@ -52,23 +123,25 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
         print('id is 0, aborting')
         return
 
-    track = s.spotify.sp.track(chosen_inline_result.query)
+    track = s.spotify.track(chosen_inline_result.query)
 
     format_str = ""
     if chosen_inline_result.result_id == "mp3_request":
         format_str = "mp3" 
-        s.download_format = Format.MP3
     if chosen_inline_result.result_id == "flac_request":
         format_str = "flac" 
-        s.download_format = Format.FLAC
     if chosen_inline_result.result_id == "m4a_request":
         format_str = "m4a" 
-        s.download_format = Format.M4A
         
-    s.download(chosen_inline_result.query) #download track by given link into specified directory
-    #this library (savify) uses spotify api to generate a search query for youtube, find a video on youtube and download it
-    #probably there is better libraries to download tracks by spotify link, but i use this for now
+    download_status = s.download(chosen_inline_result.query, format_str) #download track by given link into specified directory
+    #this class (spotipy_wrap) uses spotify api to generate a search query for youtube, find a video on youtube and download it
     
+    if not download_status:
+        await bot.edit_message_text(
+            inline_message_id=chosen_inline_result.inline_message_id, 
+            text=f"♾ unable to download {track['name']}")
+        return
+
     performer_str=track['artists'][0]['name']
 
     if len(track['artists']) > 0: #generate string in format "artist1, artist2, artist3" if there is more than 1 artist present
@@ -76,7 +149,7 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
             if x['name'] not in performer_str: performer_str += f", {x['name']}"
 
     file_id = await upload_file_and_get_file_id(
-        file_path=os.path.join("downloads", f"{track['artists'][0]['name']} - {track['name']}.{format_str}"),
+        file_path=os.path.join("downloads", f"{performer_str} - {track['name']}.{format_str}"),
         thumb_url=track['album']['images'][1]['url'], #get 320x320 artwork since telegram api requires that resolution
         track_title=track['name'],
         performer_str=performer_str,
@@ -85,7 +158,7 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
     if file_id.startswith("failed"):
         await bot.edit_message_text(
             inline_message_id=chosen_inline_result.inline_message_id, 
-            text=file_id.replace(TELEGRAM_API_TOKEM, ''))
+            text=file_id.replace(TELEGRAM_API_TOKEN, ''))
         return
 
     await bot.edit_message_media(
@@ -100,7 +173,7 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
 @dp.inline_query(lambda query: True)
 async def on_inline_query(query: InlineQuery):
     try: #ensure given query is valid spotify track (single)
-        track = s.spotify.sp.track(query.query)
+        track = s.spotify.track(query.query)
     except:
         results = [
             InlineQueryResultArticle(
@@ -113,10 +186,10 @@ async def on_inline_query(query: InlineQuery):
         return
 
     preview_url = track['preview_url']
-    analysis = s.spotify.sp.audio_analysis(query.query)
-    recommendations = s.spotify.sp.recommendations(seed_tracks=[query.query], limit=5)
-    related_artists = s.spotify.sp.artist_related_artists(track['artists'][0]['external_urls']['spotify'])
-    resolved_artist = s.spotify.sp.artist(track['artists'][0]['external_urls']['spotify'])
+    analysis = s.spotify.audio_analysis(query.query)
+    recommendations = s.spotify.recommendations(seed_tracks=[query.query], limit=5)
+    related_artists = s.spotify.artist_related_artists(track['artists'][0]['external_urls']['spotify'])
+    resolved_artist = s.spotify.artist(track['artists'][0]['external_urls']['spotify'])
     genres_of_resolved_artist = resolved_artist['genres']
 
     if genres_of_resolved_artist == []:
