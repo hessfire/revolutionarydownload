@@ -6,6 +6,7 @@
 * `aiogram` | `pip install aiogram`
 * `spotipy` | `pip install spotipy`
 * `yt-dlp` | `pip install yt-dlp`
+* `BeautifulSoup` | `pip install bs4`
 
 ***
 ## prerequisites
