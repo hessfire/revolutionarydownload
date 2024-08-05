@@ -3,6 +3,7 @@ from aiogram.types.input_media_audio import InputMediaAudio
 from spotipy import SpotifyClientCredentials, Spotify
 from aiogram.filters import Command, CommandObject
 from aiogram import Bot, Dispatcher, types
+from bs4 import BeautifulSoup
 from yt_dlp import *
 import requests
 import hashlib
@@ -171,12 +172,29 @@ async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult
 async def get_big_artwork(isrc: str) -> str:
     response = requests.get(f"https://api.deezer.com/track/isrc:{isrc}")
     deezer_json_response = json.loads(response.text)
+
+    if "error" in deezer_json_response: return "https://failed.gg"
+
     return deezer_json_response['album']['cover_xl']
 
 async def get_big_artwork_fullsize(isrc: str) -> str:
     response = requests.get(f"https://api.deezer.com/track/isrc:{isrc}")
     deezer_json_response = json.loads(response.text)
+    
+    if "error" in deezer_json_response: return "https://failed.gg"
+
     return deezer_json_response['album']['cover_xl'][:-27] + "1900x1900.png"
+
+async def get_artwork_apple_music(query: str) -> str:
+    response = requests.get(f"https://music.apple.com/us/search?term={query}")
+    soup = BeautifulSoup(response.text, 'html.parser')
+    hrefs = [a['href'] for a in soup.find_all('a', href=True) if "https://music.apple.com/us/album/" in a['href']]
+    release_link = hrefs[0]
+    response = requests.get(release_link)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    srcsets = [picture['srcset'] for picture in soup.find_all('source', srcset=True) if "296x296bb.webp" in picture['srcset']]
+    artwork_link = srcsets[0].split(" ")[0][:-14] + "99999x99999.png"
+    return artwork_link
 
 @dp.inline_query(lambda query: True)
 async def on_inline_query(query: InlineQuery):
@@ -209,7 +227,7 @@ async def on_inline_query(query: InlineQuery):
                 id='photo_request',
                 title=f"{track['artists'][0]['name']} - {track['name']}",
                 thumbnail_url=f"{track['album']['images'][0]['url']}",
-                photo_url=await get_big_artwork(track['external_ids']['isrc']),
+                photo_url=f"{track['album']['images'][0]['url']}",
                 description=f"artwork of {track['name']}"
             ),
             InlineQueryResultArticle(
@@ -250,7 +268,7 @@ async def on_inline_query(query: InlineQuery):
             id='photo_request',
             title=f"{track['artists'][0]['name']} - {track['name']}",
             thumbnail_url=f"{track['album']['images'][0]['url']}",
-            photo_url=await get_big_artwork(track['external_ids']['isrc']),
+            photo_url=f"{track['album']['images'][0]['url']}",
             description=f"artwork of {track['name']}"
         ),
         InlineQueryResultArticle(
@@ -288,8 +306,11 @@ async def on_inline_query(query: InlineQuery):
     await bot.answer_inline_query(query.id, results=results)
         
 async def download_album(user_id: int, album_object) -> None:
+    artwork_url = await get_big_artwork(s.spotify.track(album_object['tracks']['items'][0]['external_urls']['spotify'])['external_ids']['isrc'])
+    if artwork_url == 'https://failed.gg': artwork_url = album_object['album']['images'][0]['url']
+
     await bot.send_photo(user_id, 
-                             await get_big_artwork(s.spotify.track(album_object['tracks']['items'][0]['external_urls']['spotify'])['external_ids']['isrc']),
+                             artwork_url,
                              caption=f"[{album_object['artists'][0]['name']} - {album_object['name']}]({album_object['external_urls']['spotify']})\n[1900x1900 .png artwork]({await get_big_artwork_fullsize(s.spotify.track(album_object['tracks']['items'][0]['external_urls']['spotify'])['external_ids']['isrc'])}", 
                              parse_mode="markdown")
 
@@ -315,7 +336,10 @@ async def download_single(user_id: int, track_object) -> None:
     if download_status is False:
         return
     
-    await bot.send_photo(user_id, await get_big_artwork(track_object['external_ids']['isrc']), caption=f"[{await format_artists(track_object)} - {track_object['name']}]({track_object['external_urls']['spotify']})\n[1900x1900 .png artwork]({await get_big_artwork_fullsize(track_object['external_ids']['isrc'])})", parse_mode="markdown")
+    artwork_url = await get_big_artwork(track_object['external_ids']['isrc'])
+    if artwork_url == 'https://failed.gg': artwork_url = track_object['album']['images'][0]['url']
+
+    await bot.send_photo(user_id, artwork_url, caption=f"[{await format_artists(track_object)} - {track_object['name']}]({track_object['external_urls']['spotify']})\n[1900x1900 .png artwork]({await get_big_artwork_fullsize(track_object['external_ids']['isrc'])})\n[original resolution .png artwork]({await get_artwork_apple_music(track_object['artists'][0]['name'] + ' ' + track_object['name'])})", parse_mode="markdown")
     await bot.send_audio(user_id,
                          audio=FSInputFile(path=os.path.join("downloads", hashlib.md5(f"{await format_artists(track_object)} - {track_object['name']}".encode('utf-8')).hexdigest() + ".mp3")),
                          thumbnail=URLInputFile(url=track_object['album']['images'][1]['url']),
