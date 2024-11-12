@@ -1,16 +1,13 @@
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery, InlineQueryResultAudio, InlineQueryResultPhoto, InputTextMessageContent, InlineQueryResultArticle, URLInputFile
+import requests, hashlib, asyncio, logging, json, os, random, sqlite3
 from aiogram.types.input_media_audio import InputMediaAudio
 from spotipy import SpotifyClientCredentials, Spotify
 from aiogram.filters import Command, CommandObject
 from aiogram import Bot, Dispatcher, types
+from ytmusicapi import YTMusic
 from bs4 import BeautifulSoup
+from sys import platform
 from yt_dlp import *
-import requests
-import hashlib
-import asyncio
-import logging
-import json
-import os
 
 #see how to obtain spotify tokens: https://developer.spotify.com/documentation/web-api/concepts/apps
 
@@ -20,18 +17,16 @@ SPOTIPY_CLIENT_SECRET = 'a25a8aac15f0a98a9555ef61dc833385'
 CHANNEL_ID = -100123456789 #since telegram requires file_id in order to edit audio in message sent by inline query, you need other chat(channel) where bot can upload files and take their file_id
 logging.basicConfig(level=logging.INFO)
 
-def sanitize_song_name(name: str) -> str:
-    if " - " in name:
-        name = name.replace(" - ", " (") + ")"
-
-    return name.lower()
+bot = Bot(token=TELEGRAM_API_TOKEN)
+dp = Dispatcher()
+ytmusic = YTMusic()
 
 class spotipy_wrap:
     def __init__(self, client_id, client_secret, download_dir="downloads"):
           self.spotify = Spotify(auth_manager=SpotifyClientCredentials(client_id=client_id,client_secret=client_secret))
           self.download_dir = download_dir
           
-    def __search_youtube(self, search_query:str, max_results=10):
+    def __search_youtube(self, search_query:str, max_results=13):
         options = {
             'format': 'best',
             'extract_flat': True
@@ -57,6 +52,7 @@ class spotipy_wrap:
             'extractaudio': True,
             'audioformat': format,
             'outtmpl': output_path,
+            "cookiefile": "ck.txt",
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': format,
@@ -86,21 +82,61 @@ class spotipy_wrap:
         results = self.__search_youtube(search_query=query)
 
         for idx, video in enumerate(results, start=1):
-            print(f"{video['title'].lower()} / {name} / {sanitize_song_name(name)}")
             if video['title'] == name:
                 self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest()))
                 return True
             elif sanitize_song_name(name) in video['title'].lower() and self.__duration_near(float(video['duration']), (float(track['duration_ms']) / 1000), tolerance=1.5):
                 self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest()))
                 return True
-            
+
+        results = ytm_search(query)
+        
+        for video in results:
+            if video['title'] == name:
+                self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest()))
+                return True
+            elif sanitize_song_name(name) in video['title'].lower() and self.__duration_near(float(video['duration']), (float(track['duration_ms']) / 1000), tolerance=1.5):
+                self.__download_youtube_video(video['url'], format_str, os.path.join(self.download_dir, hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest()))
+                return True
+       
         return False
 
-bot = Bot(token=TELEGRAM_API_TOKEN)
-dp = Dispatcher()
 s = spotipy_wrap(client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET, download_dir="downloads")
 
-async def upload_file_and_get_file_id(file_path:str,thumb_url:str,track_title:str,performer_str:str,duration:int) -> str:
+class cache:
+    def __init__(self):
+        self.conn = sqlite3.connect('cache.db')
+        self.cursor = self.conn.cursor()
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS cache (hash TEXT, file_id TEXT)''')
+        self.conn.commit()
+
+    def add_file_id(self, hash, file_id):
+        self.cursor.execute('INSERT INTO cache (hash, file_id) VALUES (?, ?)', (hash, file_id))
+        self.conn.commit()
+
+    def get_file_id(self, hash):
+        self.cursor.execute(f'SELECT file_id FROM cache WHERE hash = ?', (hash,))
+        result = self.cursor.fetchone()
+        return result[0] if result else None
+
+cache_manager = cache()
+
+def ytm_search(query: str):
+    search_results = ytmusic.search(query)
+    out = []
+    for result in search_results:
+        if result['resultType'] != "song": continue
+        out.append({"title": result['title'], "url": f"https://www.youtube.com/watch?v={result['videoId']}"})
+
+    return out
+
+def sanitize_song_name(name: str) -> str:
+    if " - " in name:
+        name = name.replace(" - ", " (") + ")"
+
+    return name.lower()
+
+async def upload_file_and_get_file_id(file_path: str, thumb_url: str, track_title: str, performer_str: str, duration: int) -> str:
     try:
         m = await bot.send_audio(CHANNEL_ID, FSInputFile(path=file_path), thumbnail=URLInputFile(url=thumb_url), title=track_title, performer=performer_str, duration=int(duration))
         return m.audio.file_id
@@ -123,50 +159,55 @@ async def start_cmd(message: types.Message, command:CommandObject) -> None:
 @dp.chosen_inline_result(lambda chosen_inline_result: True)
 async def on_chosen_inline_result(chosen_inline_result: types.ChosenInlineResult):
     if not chosen_inline_result.inline_message_id:
-        print('id is 0, aborting')
         return
 
-    track = s.spotify.track(chosen_inline_result.query)
+    format_str = "mp3"
+    link = chosen_inline_result.query
 
-    format_str = ""
-    if chosen_inline_result.result_id == "mp3_request":
-        format_str = "mp3" 
-    if chosen_inline_result.result_id == "flac_request":
-        format_str = "flac" 
-    if chosen_inline_result.result_id == "m4a_request":
-        format_str = "m4a" 
+    if "querymp3" in chosen_inline_result.result_id:
+        link = chosen_inline_result.result_id.split("_")[1]
+
+    track = s.spotify.track(link)
+
+    if "_request" in chosen_inline_result.result_id: format_str = chosen_inline_result.result_id.replace("_request", "")
         
-    download_status = s.download(chosen_inline_result.query, format_str) #download track by given link into specified directory
-    #this class (spotipy_wrap) uses spotify api to generate a search query for youtube, find a video on youtube and download it
-    
-    if not download_status:
-        await bot.edit_message_text(
-            inline_message_id=chosen_inline_result.inline_message_id, 
-            text=f"⛔ unable to download {track['name']}")
-        return
-
     performer_str = await format_artists(track)
+    hash = hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest()
+    path = os.path.join("downloads", f"{hash}.{format_str}")
+    database_file_id = cache_manager.get_file_id(hash)
+    file_id = None
 
-    path = os.path.join("downloads", hashlib.md5(f"{performer_str} - {track['name']}".encode('utf-8')).hexdigest() + f".{format_str}")
-
-    file_id = await upload_file_and_get_file_id(
-        file_path=path,
-        thumb_url=track['album']['images'][1]['url'], #get 320x320 artwork since telegram api requires that resolution
-        track_title=track['name'],
-        performer_str=performer_str,
-        duration=int(track['duration_ms']) / 1000)
+    if database_file_id:
+        file_id = database_file_id
+    else:
+        download_status = s.download(link, format_str) #download track by given link into specified directory
+        #this class (spotipy_wrap) uses spotify api to generate a search query for youtube, find a video on youtube and download it
     
-    if file_id.startswith("failed"):
-        await bot.edit_message_text(
-            inline_message_id=chosen_inline_result.inline_message_id, 
-            text=file_id.replace(TELEGRAM_API_TOKEN, ''))
-        return
+        if not download_status:
+            await bot.edit_message_text(
+                inline_message_id=chosen_inline_result.inline_message_id, 
+                text=f"⛔ unable to download {track['name']}")
+            return
+
+        file_id = await upload_file_and_get_file_id(
+            file_path=path,
+            thumb_url=track['album']['images'][1]['url'], #get 320x320 artwork since telegram api requires that resolution
+            track_title=track['name'],
+            performer_str=performer_str,
+            duration=int(track['duration_ms']) / 1000)
+    
+        if file_id.startswith("failed"):
+            await bot.edit_message_text(
+                inline_message_id=chosen_inline_result.inline_message_id, 
+                text=file_id.replace(TELEGRAM_API_TOKEN, ''))
+            return
+
+        cache_manager.add_file_id(hash, file_id)
 
     await bot.edit_message_media(
         inline_message_id=chosen_inline_result.inline_message_id, 
         media=InputMediaAudio(media=file_id))
 
-    await asyncio.sleep(86400) #wait for 24h and delete downloaded file
     if os.path.exists(path): os.remove(path)
 
 async def get_big_artwork(isrc: str) -> str:
@@ -200,16 +241,44 @@ async def get_artwork_apple_music(query: str) -> str:
 async def on_inline_query(query: InlineQuery):
     try: #ensure given query is valid spotify track (single)
         track = s.spotify.track(query.query)
-    except:
-        results = [
-            InlineQueryResultArticle(
-                id='2',
-                title=f"enter a valid spotify link",
-                input_message_content=InputTextMessageContent(message_text='no valid link was provided')
-            )
-        ]
-        await bot.answer_inline_query(query.id, results=results)
-        return
+    except: #invalid link, or song name
+        try: #trying to search songs with passed name
+            if query.query == "": raise Exception()
+            
+            results = []
+            
+            search_response = s.spotify.search(query.query, limit=10)
+
+            for track in search_response['tracks']['items']:
+                if not track['preview_url']: continue
+                
+                results.append(InlineQueryResultArticle(
+                    id='querymp3_' + track['external_urls']["spotify"],
+                    title=f"{track['artists'][0]['name']} - {track['name']}",
+                    input_message_content=InputTextMessageContent(message_text=f"downloading {track['artists'][0]['name']} - {track['name']}, usually it takes 5-10 seconds"),
+                    thumbnail_url=track['album']['images'][0]['url'],
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="made with love by @beevil1337", url="https://t.me/beevil1337")]])
+                ))
+
+                results.append(InlineQueryResultPhoto(
+                    id='photorequest_' + str(random.randint(3, 100)),
+                    thumbnail_url=f"{track['album']['images'][0]['url']}",
+                    photo_url=f"{track['album']['images'][0]['url']}",
+                ))
+       
+            await bot.answer_inline_query(query.id, results=results)
+            return
+        
+        except:
+            results = [
+                InlineQueryResultArticle(
+                    id='2',
+                    title=f"enter a valid spotify link",
+                    input_message_content=InputTextMessageContent(message_text='no valid link was provided')
+                )
+            ]
+            await bot.answer_inline_query(query.id, results=results)
+            return
 
     preview_url = track['preview_url']
     analysis = s.spotify.audio_analysis(query.query)
@@ -243,25 +312,25 @@ async def on_inline_query(query: InlineQuery):
     track['available_markets'] = None #fixes "message too long" issue
 
     results = [
-        InlineQueryResultAudio(
+        InlineQueryResultArticle(
             id='mp3_request',
-            audio_url=preview_url,
             title=f"(mp3) {track['artists'][0]['name']} - {track['name']}",
-            caption="wait until track download is finished, usually it takes 5-10 seconds",
+            input_message_content=InputTextMessageContent(message_text=f"downloading {track['artists'][0]['name']} - {track['name']}, usually it takes 5-10 seconds"),
+            thumbnail_url=track['album']['images'][0]['url'],
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="made with love by @beevil1337", url="https://t.me/beevil1337")]])
         ),
-        InlineQueryResultAudio(
+        InlineQueryResultArticle(
             id='flac_request',
-            audio_url=preview_url,
             title=f"(flac) {track['artists'][0]['name']} - {track['name']}",
-            caption="wait until track download is finished, usually it takes 5-10 seconds",
+            input_message_content=InputTextMessageContent(message_text=f"downloading {track['artists'][0]['name']} - {track['name']}, usually it takes 5-10 seconds"),
+            thumbnail_url=track['album']['images'][0]['url'],
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="made with love by @beevil1337", url="https://t.me/beevil1337")]])
         ),
-        InlineQueryResultAudio(
+        InlineQueryResultArticle(
             id='m4a_request',
-            audio_url=preview_url,
             title=f"(m4a) {track['artists'][0]['name']} - {track['name']}",
-            caption="wait until track download is finished, usually it takes 5-10 seconds",
+            input_message_content=InputTextMessageContent(message_text=f"downloading {track['artists'][0]['name']} - {track['name']}, usually it takes 5-10 seconds"),
+            thumbnail_url=track['album']['images'][0]['url'],
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="made with love by @beevil1337", url="https://t.me/beevil1337")]])
         ),
         InlineQueryResultPhoto(
@@ -277,30 +346,30 @@ async def on_inline_query(query: InlineQuery):
             input_message_content=InputTextMessageContent(message_text=f"{track}"),
             thumbnail_url="https://i.imgur.com/zpPuV4Y.jpeg"
         ),
-        InlineQueryResultArticle(
-            id='analysis_request',
-            title=f"tempo of {track['name']} detected by spotify analysis",
-            input_message_content=InputTextMessageContent(message_text=f"tempo of {track['name']} is {analysis['track']['tempo']}"),
-            thumbnail_url="https://i.imgur.com/e3grrAM.jpeg"
-        ),
-        InlineQueryResultArticle(
-            id='recommendations_request',
-            title=f"recommendations based on {track['name']} generated by spotify api",
-            input_message_content=InputTextMessageContent(message_text=f"recommended tracks based on {track['name']}:\n{await get_formatted_track_list(recommendations)}"),
-            thumbnail_url="https://i.imgur.com/lTheQra.jpg"
-        ),
-        InlineQueryResultArticle(
-            id='related_artists_request',
-            title=f"related(similar) artists to {track['artists'][0]['name']} generated by spotify api",
-            input_message_content=InputTextMessageContent(message_text=f"similar artists to {track['artists'][0]['name']}:\n{await get_formatted_similar_artists(related_artists)}"),
-            thumbnail_url="https://i.imgur.com/lTheQra.jpg"
-        ), 
-        InlineQueryResultArticle(
-            id='genres_request',
-            title=f"genres of {track['artists'][0]['name']} detected by spotify api",
-            input_message_content=InputTextMessageContent(message_text=f"detected genres of {track['artists'][0]['name']} are {str(genres_of_resolved_artist)}"),
-            thumbnail_url="https://i.imgur.com/wyZwZN7.jpg"
-        )
+        # InlineQueryResultArticle(
+        #     id='analysis_request',
+        #     title=f"tempo of {track['name']} detected by spotify analysis",
+        #     input_message_content=InputTextMessageContent(message_text=f"tempo of {track['name']} is {analysis['track']['tempo']}"),
+        #     thumbnail_url="https://i.imgur.com/e3grrAM.jpeg"
+        # ),
+        # InlineQueryResultArticle(
+        #     id='recommendations_request',
+        #     title=f"recommendations based on {track['name']} generated by spotify api",
+        #     input_message_content=InputTextMessageContent(message_text=f"recommended tracks based on {track['name']}:\n{await get_formatted_track_list(recommendations)}"),
+        #     thumbnail_url="https://i.imgur.com/lTheQra.jpg"
+        # ),
+        # InlineQueryResultArticle(
+        #     id='related_artists_request',
+        #     title=f"related(similar) artists to {track['artists'][0]['name']} generated by spotify api",
+        #     input_message_content=InputTextMessageContent(message_text=f"similar artists to {track['artists'][0]['name']}:\n{await get_formatted_similar_artists(related_artists)}"),
+        #     thumbnail_url="https://i.imgur.com/lTheQra.jpg"
+        # ), 
+        # InlineQueryResultArticle(
+        #     id='genres_request',
+        #     title=f"genres of {track['artists'][0]['name']} detected by spotify api",
+        #     input_message_content=InputTextMessageContent(message_text=f"detected genres of {track['artists'][0]['name']} are {str(genres_of_resolved_artist)}"),
+        #     thumbnail_url="https://i.imgur.com/wyZwZN7.jpg"
+        # )
     ]    
 
     await bot.answer_inline_query(query.id, results=results)
@@ -315,38 +384,57 @@ async def download_album(user_id: int, album_object) -> None:
                              parse_mode="markdown")
 
     for track in album_object['tracks']['items']:
-        download_status = s.download(track['external_urls']['spotify'], "mp3")
-        if download_status is False:
-            await bot.send_message(user_id, f"⛔ unable to download {track['name']}")
-            continue
+        hash = hashlib.md5(f"{await format_artists(track)} - {track['name']}".encode('utf-8')).hexdigest()
+        path = os.path.join("downloads", f"{hash}.mp3")
+        database_file_id = cache_manager.get_file_id(hash)
+        
+        if database_file_id:
+            await bot.send_audio(user_id, audio=database_file_id)
+        else:
+            download_status = s.download(track['external_urls']['spotify'], "mp3")
+            if download_status is False:
+                await bot.send_message(user_id, f"⛔ unable to download {track['name']}")
+                continue
 
-        await bot.send_audio(user_id,
-                                audio=FSInputFile(path=os.path.join("downloads", hashlib.md5(f"{await format_artists(track)} - {track['name']}".encode('utf-8')).hexdigest() + ".mp3")),
-                                thumbnail=URLInputFile(url=album_object['images'][1]['url']),
-                                title=track['name'],
-                                performer=await format_artists(track),
-                                duration=int(int(track['duration_ms']) / 1000))
+            response = await bot.send_audio(user_id,
+                                    audio=FSInputFile(path=path),
+                                    thumbnail=URLInputFile(url=album_object['images'][1]['url']),
+                                    title=track['name'],
+                                    performer=await format_artists(track),
+                                    duration=int(int(track['duration_ms']) / 1000))
+
+            cache_manager.add_file_id(hash, response.audio.file_id)
             
-        os.remove(os.path.join("downloads", hashlib.md5(f"{await format_artists(track)} - {track['name']}".encode('utf-8')).hexdigest() + ".mp3"))
+        if os.path.exists(path): os.remove(path)
         
     return
 
 async def download_single(user_id: int, track_object) -> None:
-    download_status = s.download(track_object['external_urls']['spotify'], "mp3")
-    if download_status is False:
-        return
-    
     artwork_url = await get_big_artwork(track_object['external_ids']['isrc'])
     if artwork_url == 'https://failed.gg': artwork_url = track_object['album']['images'][0]['url']
+    hash = hashlib.md5(f"{await format_artists(track_object)} - {track_object['name']}".encode('utf-8')).hexdigest()
+    path = os.path.join("downloads", f"{hash}.mp3")
+    await bot.send_photo(user_id, artwork_url, caption=f"[{await format_artists(track_object)} - {track_object['name']}]({track_object['external_urls']['spotify']})\n[1900x1900 .png artwork]({await get_big_artwork_fullsize(track_object['external_ids']['isrc'])})\n[original resolution .png artwork]({await get_artwork_apple_music(track_object['artists'][0]['name'] + ' ' + track_object['name'])})", parse_mode="markdown")    
 
-    await bot.send_photo(user_id, artwork_url, caption=f"[{await format_artists(track_object)} - {track_object['name']}]({track_object['external_urls']['spotify']})\n[1900x1900 .png artwork]({await get_big_artwork_fullsize(track_object['external_ids']['isrc'])})\n[original resolution .png artwork]({await get_artwork_apple_music(track_object['artists'][0]['name'] + ' ' + track_object['name'])})", parse_mode="markdown")
-    await bot.send_audio(user_id,
-                         audio=FSInputFile(path=os.path.join("downloads", hashlib.md5(f"{await format_artists(track_object)} - {track_object['name']}".encode('utf-8')).hexdigest() + ".mp3")),
-                         thumbnail=URLInputFile(url=track_object['album']['images'][1]['url']),
-                         title=track_object['name'],
-                         performer=await format_artists(track_object),
-                         duration=int(int(track_object['duration_ms']) / 1000))
+    database_file_id = cache_manager.get_file_id(hash)
+        
+    if database_file_id:
+        await bot.send_audio(user_id, audio=database_file_id)
+    else:
+        download_status = s.download(track_object['external_urls']['spotify'], "mp3")
+        if download_status is False:
+            return
+    
+        response = await bot.send_audio(user_id,
+                             audio=FSInputFile(path=path),
+                             thumbnail=URLInputFile(url=track_object['album']['images'][1]['url']),
+                             title=track_object['name'],
+                             performer=await format_artists(track_object),
+                             duration=int(int(track_object['duration_ms']) / 1000))
 
+        cache_manager.add_file_id(hash, response.audio.file_id)
+        
+    if os.path.exists(path): os.remove(path)
     return True
 
 @dp.callback_query()
@@ -354,7 +442,7 @@ async def callback_query_handler(callback_query: types.CallbackQuery):
     if callback_query.data.startswith("album:"): 
         alb = s.spotify.album(callback_query.data[6:])
         await callback_query.answer() 
-        await download_album(callback_query, alb)
+        await download_album(callback_query.from_user.id, alb)
 
     track = s.spotify.track(callback_query.data)
     
@@ -391,10 +479,11 @@ async def any_message(message: types.Message) -> None:
         inline_keyboard.append([types.InlineKeyboardButton(text=f"{await format_artists(track)} - {track['name']}", callback_data=f"{track['external_urls']['spotify']}"),
                                 types.InlineKeyboardButton(text=f"{album_track['artists'][0]['name']} - {album_track['name']}", callback_data=f"album:{album_track['external_urls']['spotify']}")])
 
-    await message.reply(f"found: ", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=inline_keyboard))
+    await message.reply(f"found (left side - singles, right side - albums): ", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=inline_keyboard))
 
 async def main():
-    await dp.start_polling(bot, skip_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
+    if platform == "win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
