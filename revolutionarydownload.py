@@ -126,7 +126,7 @@ def ytm_search(query: str):
     out = []
     for result in search_results:
         if result['resultType'] != "song": continue
-        out.append({"title": result['title'], "url": f"https://www.youtube.com/watch?v={result['videoId']}"})
+        out.append({"title": result['title'], "url": f"https://www.youtube.com/watch?v={result['videoId']}", "duration": result['duration_seconds']})
 
     return out
 
